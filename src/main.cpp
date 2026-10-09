@@ -80,19 +80,14 @@ const Pulso sonidos[38][16] = {
 };
  
 const char* nombresSonidos[38] = {
-  "1-5 pip rapidos",       "2-3 bips largos",        "3-6 pip medios",
-  "4-2 bips muy largos",   "5-8 pip veloz",           "6-Largo-corto x2",
-  "7-2 cortos+largo",      "8-Largo+3 cortos",        "9-3 medios+largo",
-  "10-4 bips medios",      "11-6 pip doble",          "12-Largo-corto-largo",
-  "13-4 pip pausa larga",  "14-2 bips lentos",        "15-8 pip pausa doble",
-  "16-3 rapidos+pausa",    "17-Crescendo",             "18-5 bips rapidos",
-  "19-Pip lento x3",       "20-2 bips muy largos",    "21-Corto-largo alt.",
-  "22-5 pip simetricos",   "23-Largo+3 cortos",       "24-10 pip rapidos",
-  "25-Cascada desc.",       "26-Cascada asc.",         "27-Corto-largo-corto",
-  "28-Largo-corto x2",     "29-4 pip medios",         "30-SOS simple",
-  "31-Dos pip+largo",      "32-5 bips largos",        "33-7 pip ritmicos",
-  "34-8 pip medios",       "35-3 bips lentos",        "36-Pip-largo alt.",
-  "37-6 pip cuarto seg.",  "38-Secuencia musical"
+  "Timbre 1",  "Timbre 2",  "Timbre 3",  "Timbre 4",  "Timbre 5",
+  "Timbre 6",  "Timbre 7",  "Timbre 8",  "Timbre 9",  "Timbre 10",
+  "Timbre 11", "Timbre 12", "Timbre 13", "Timbre 14", "Timbre 15",
+  "Timbre 16", "Timbre 17", "Timbre 18", "Timbre 19", "Timbre 20",
+  "Timbre 21", "Timbre 22", "Timbre 23", "Timbre 24", "Timbre 25",
+  "Timbre 26", "Timbre 27", "Timbre 28", "Timbre 29", "Timbre 30",
+  "Timbre 31", "Timbre 32", "Timbre 33", "Timbre 34", "Timbre 35",
+  "Timbre 36", "Timbre 37", "Timbre 38"
 };
  
 // =========================================================
@@ -120,14 +115,17 @@ AlarmaProg alarmasProg[NUM_ALARMAS_PROG] = {
 };
  
 // =========================================================
-// MOTOR DE BUZZER (non-blocking)
+// MOTOR DE BUZZER (non-blocking) — para alarmas programadas
 // =========================================================
-int8_t   buzzerAlarmIdx    = -1;
-uint8_t  buzzerPulsoIdx    = 0;
-bool     buzzerFase        = false;
-unsigned long buzzerProxMs = 0;
-uint8_t  buzzerReps        = 0;
-#define  BUZZER_REPS 3
+int8_t        buzzerAlarmIdx = -1;
+uint8_t       buzzerPulsoIdx = 0;
+bool          buzzerFase     = false;
+unsigned long buzzerProxMs   = 0;
+uint8_t       buzzerReps     = 0;
+#define       BUZZER_REPS    3
+ 
+// Timbre manual: suena mientras sea true (tiene prioridad)
+bool timbreManual = false;
  
 void iniciarBuzzer(uint8_t idx) {
   buzzerAlarmIdx = idx;
@@ -144,6 +142,11 @@ void detenerBuzzer() {
 }
  
 void tickBuzzer() {
+  // El timbre manual tiene prioridad absoluta
+  if (timbreManual) {
+    digitalWrite(BUZZER_PIN, HIGH);
+    return;
+  }
   if (buzzerAlarmIdx < 0) return;
   if (millis() < buzzerProxMs) return;
   const Pulso* pat = sonidos[buzzerAlarmIdx];
@@ -178,14 +181,6 @@ const uint32_t Apagado = TiraDeLeds.Color(0,0,0);
 char stringModoWeb[20] = "INICIALIZANDO...";
 char stringValorWeb[20] = "00:00";
  
-int     alarmaSlider        = 0;
-int     alarmaHoras         = 0;
-int     alarmaMinutos       = 0;
-bool    alarmaActiva        = false;
-bool    alarmaDisparada     = false;
-bool    alarmaApagadaManual = false;
-uint8_t alarmaSonidoManual  = 0;
- 
 const byte Digitos[] = {
   0b1111110,0b0110000,0b1101101,0b1111001,0b0110011,
   0b1011011,0b1011111,0b1110000,0b1111111,0b1111011
@@ -194,24 +189,13 @@ const byte Digitos[] = {
 int horas=0,minutos=0,segundos=0,dias=1,meses=1;
 unsigned long ultSincNTP = 0;
  
-void calcularHoraAlarma(int sv) {
-  int t = sv * 10;
-  if (t >= 1440) t = 0;
-  alarmaHoras   = t / 60;
-  alarmaMinutos = t % 60;
-}
- 
 // =========================================================
-// HTML: se construye pieza a pieza con resp->print()
-// SIN raw strings R"()" para evitar conflictos con
-// backticks y caracteres especiales de JS/HTML
+// PAGINA WEB
 // =========================================================
- 
 void enviarPaginaPrincipal(AsyncWebServerRequest* request) {
- 
   AsyncResponseStream* resp = request->beginResponseStream("text/html");
  
-  // ---- HEAD + CSS ----
+  // HEAD + CSS
   resp->print("<!DOCTYPE html><html lang='es'><head>");
   resp->print("<meta charset='UTF-8'>");
   resp->print("<meta name='viewport' content='width=device-width,initial-scale=1.0'>");
@@ -223,27 +207,31 @@ void enviarPaginaPrincipal(AsyncWebServerRequest* request) {
   resp->print("h1{color:#00ff66;margin-bottom:22px;font-size:23px}");
   resp->print("h2{color:#aaa;font-size:13px;text-transform:uppercase;letter-spacing:2px;margin:0 0 13px 0}");
   resp->print(".card{background:#292929;padding:15px;border-radius:10px;margin-bottom:18px;border-left:5px solid #00ff66}");
-  resp->print(".card.alarma-card{border-left-color:#ff9900}.card.alarma-card.armada{border-left-color:#ff3333}");
+  resp->print(".card.timbre-card{border-left-color:#ff9900}");
   resp->print(".card.prog-card{border-left-color:#4488ff}");
   resp->print(".label{font-size:12px;text-transform:uppercase;color:#888;letter-spacing:1px}");
   resp->print(".value{font-size:32px;font-weight:bold;font-family:monospace;color:#fff;margin-top:5px}");
   resp->print("input[type=range]{-webkit-appearance:none;width:100%;border-radius:8px;outline:none;height:12px;cursor:pointer}");
   resp->print("input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:25px;height:25px;border-radius:50%;background:#fff;cursor:pointer;box-shadow:0 0 5px #000}");
   resp->print("#colorSlider{background:linear-gradient(to right,red,yellow,green,cyan,blue,magenta,red)}");
-  resp->print("#alarmaSlider{background:linear-gradient(to right,#1a1a2e,#ff9900)}");
-  resp->print(".alarm-time-display{font-size:42px;font-weight:bold;font-family:monospace;color:#ff9900;margin:8px 0 4px;letter-spacing:4px;transition:color .3s}");
-  resp->print(".alarm-time-display.armada{color:#ff4444;text-shadow:0 0 12px #f20}");
-  resp->print(".alarm-sub{font-size:11px;color:#666;margin-bottom:12px}");
   resp->print(".slider-labels{display:flex;justify-content:space-between;font-size:11px;color:#555;margin-top:4px}");
-  resp->print(".btn-row{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}");
-  resp->print(".btn{flex:1;padding:9px 6px;border:none;border-radius:8px;font-size:12px;font-weight:bold;cursor:pointer;transition:opacity .2s,transform .1s;min-width:80px}");
-  resp->print(".btn:active{transform:scale(.97)}");
-  resp->print(".btn-armar{background:#ff9900;color:#111}.btn-desarmar{background:#333;color:#aaa;border:1px solid #555}.btn-apagar{background:#cc2200;color:#fff}");
-  resp->print(".badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:bold;letter-spacing:1px;margin-top:6px}");
-  resp->print(".badge-off{background:#2a2a2a;color:#555;border:1px solid #333}");
-  resp->print(".badge-set{background:#332800;color:#ff9900;border:1px solid #ff9900}");
-  resp->print(".badge-ringing{background:#3d0000;color:#ff4444;border:1px solid #f44;animation:pulso .6s infinite alternate}");
-  resp->print("@keyframes pulso{from{opacity:1}to{opacity:.4}}");
+  // Boton timbre
+  resp->print(".btn-timbre{"
+    "display:block;width:100%;padding:18px;"
+    "border:none;border-radius:12px;"
+    "font-size:18px;font-weight:bold;letter-spacing:1px;"
+    "cursor:pointer;transition:transform .1s,box-shadow .1s;"
+    "background:#ff9900;color:#111;"
+    "box-shadow:0 4px 12px rgba(255,153,0,.4);"
+    "user-select:none;-webkit-user-select:none;"
+  "}");
+  resp->print(".btn-timbre:active,.btn-timbre.sonando{"
+    "background:#ff3300;color:#fff;"
+    "box-shadow:0 4px 16px rgba(255,50,0,.6);"
+    "transform:scale(.97);"
+    "animation:pulso .5s infinite alternate;"
+  "}");
+  // Tabla alarmas programadas
   resp->print("select{background:#1a1a1a;color:#ddd;border:1px solid #444;border-radius:6px;padding:5px 8px;font-size:12px;width:100%;margin-top:6px;cursor:pointer}");
   resp->print("select:focus{outline:none;border-color:#888}");
   resp->print(".prog-table{width:100%;border-collapse:collapse;font-size:13px;margin-top:4px}");
@@ -252,63 +240,59 @@ void enviarPaginaPrincipal(AsyncWebServerRequest* request) {
   resp->print(".prog-table tr:last-child td{border-bottom:none}.prog-table tr:hover td{background:#303030}");
   resp->print(".hora-badge{font-family:monospace;font-size:15px;font-weight:bold;color:#4af;background:#0d1a2e;padding:3px 8px;border-radius:5px}");
   resp->print(".chk{width:18px;height:18px;cursor:pointer;accent-color:#4488ff}");
-  resp->print(".ringing-row td{background:#2a0000!important;animation:pulso .6s infinite alternate}");
+  resp->print(".badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:bold;letter-spacing:1px}");
+  resp->print(".badge-off{background:#2a2a2a;color:#555;border:1px solid #333}");
+  resp->print(".badge-set{background:#0d2200;color:#00ff66;border:1px solid #00ff66}");
+  resp->print(".badge-ringing{background:#3d0000;color:#ff4444;border:1px solid #f44;animation:pulso .6s infinite alternate}");
   resp->print(".sound-sel{background:#1a1a1a;color:#ddd;border:1px solid #333;border-radius:5px;padding:3px 5px;font-size:11px;width:100%;cursor:pointer}");
+  resp->print("@keyframes pulso{from{opacity:1}to{opacity:.4}}");
   resp->print("</style></head><body><div class='container'>");
  
-  // ---- TARJETA: HORA ACTUAL ----
+  // Tarjeta: hora actual
   resp->print("<h1>&#9200; Reloj de Pared WS2812B</h1>");
   resp->print("<div class='card'>");
   resp->print("<div id='web-modo' class='label'>Cargando...</div>");
   resp->print("<div id='web-valor' class='value'>--:--</div>");
   resp->print("</div>");
  
-  // ---- TARJETA: COLOR ----
+  // Tarjeta: color
   resp->print("<div class='card'><h2>Color de los Digitos</h2>");
   resp->printf("<input type='range' id='colorSlider' min='0' max='359' value='%d' oninput='enviarColor(this.value)'>", tonoElegido);
   resp->print("<div class='slider-labels'><span>0</span><span>Tono HSV</span><span>359</span></div>");
   resp->print("</div>");
  
-  // ---- TARJETA: ALARMA MANUAL ----
-  resp->print("<div class='card alarma-card' id='alarmaCard'>");
-  resp->print("<h2>&#128276; Alarma Manual</h2>");
-  resp->printf("<div id='alarmaTimeDisplay' class='alarm-time-display'>%02d:%02d</div>", alarmaHoras, alarmaMinutos);
-  resp->print("<div class='alarm-sub'>Paso: 10 minutos | Maximo: 23:50</div>");
-  resp->printf("<input type='range' id='alarmaSlider' min='0' max='143' step='1' value='%d' oninput='actualizarAlarmaUI(this.value)'>", alarmaSlider);
-  resp->print("<div class='slider-labels'><span>00:00</span><span>Hora de alarma</span><span>23:50</span></div>");
-  resp->print("<div class='label' style='margin-top:10px'>Sonido</div>");
-  resp->print("<select id='sonidoManual' onchange='setSonidoManual(this.value)'>");
-  for (int i = 0; i < 38; i++) {
-    resp->printf("<option value='%d'%s>%s</option>", i, (i == alarmaSonidoManual ? " selected" : ""), nombresSonidos[i]);
-  }
-  resp->print("</select>");
-  resp->print("<div id='alarmaBadge' class='badge badge-off'>DESARMADA</div>");
-  resp->print("<div class='btn-row'>");
-  resp->print("<button class='btn btn-armar' onclick='armarAlarma()'>Armar</button>");
-  resp->print("<button class='btn btn-desarmar' onclick='desarmarAlarma()'>Desarmar</button>");
-  resp->print("<button class='btn btn-apagar' id='btnApagar' style='display:none' onclick='apagarAlarma()'>Apagar</button>");
-  resp->print("</div></div>");
+  // Tarjeta: timbre manual
+  resp->print("<div class='card timbre-card'>");
+  resp->print("<h2>&#128276; Timbre Manual</h2>");
+  resp->print("<button id='btnTimbre' class='btn-timbre'"
+              " onmousedown='timbreOn()' onmouseup='timbreOff()'"
+              " ontouchstart='timbreOn(event)' ontouchend='timbreOff()'>"
+              "Mantener para sonar"
+              "</button>");
+  resp->print("</div>");
  
-  // ---- TARJETA: ALARMAS PROGRAMADAS ----
+  // Tarjeta: alarmas programadas
   resp->print("<div class='card prog-card'>");
   resp->print("<h2>&#128197; Alarmas Programadas</h2>");
   resp->print("<table class='prog-table'>");
   resp->print("<thead><tr><th>ON</th><th>Hora</th><th>Sonido</th><th>Estado</th></tr></thead>");
   resp->print("<tbody id='tbodyProg'></tbody>");
-  resp->print("</table></div></div>");
+  resp->print("</table></div>");
  
-  // ---- JAVASCRIPT ----
+  resp->print("</div>"); // container
+ 
+  // JavaScript
   resp->print("<script>");
  
-  // Array de horarios
+  // Datos de horarios
   resp->print("var HORARIOS=[");
   for (int i = 0; i < NUM_ALARMAS_PROG; i++) {
     resp->printf("{hh:%d,mm:%d}", alarmasProg[i].hh, alarmasProg[i].mm);
-    if (i < NUM_ALARMAS_PROG - 1) resp->print(",");
+    if (i < NUM_ALARMAS_PROG-1) resp->print(",");
   }
   resp->print("];");
  
-  // Array de nombres de sonidos
+  // Nombres de sonidos
   resp->print("var SONIDOS=[");
   for (int i = 0; i < 38; i++) {
     resp->printf("'%s'", nombresSonidos[i]);
@@ -323,49 +307,36 @@ void enviarPaginaPrincipal(AsyncWebServerRequest* request) {
       alarmasProg[i].activa    ? "true" : "false",
       alarmasProg[i].sonido,
       alarmasProg[i].disparada ? "true" : "false");
-    if (i < NUM_ALARMAS_PROG - 1) resp->print(",");
+    if (i < NUM_ALARMAS_PROG-1) resp->print(",");
   }
   resp->print("];");
  
-  // Funciones JS (sin backticks, sin caracteres especiales)
-  resp->print("var alarmaArmada=false,alarmaRinging=false;");
- 
-  resp->print("function sliderToTime(v){"
-    "var m=parseInt(v)*10;"
-    "var hh=Math.floor(m/60);"
-    "var mm=m%60;"
-    "return(hh<10?'0'+hh:hh)+':'+(mm<10?'0'+mm:mm);"
-  "}");
- 
-  resp->print("function actualizarAlarmaUI(v){"
-    "document.getElementById('alarmaTimeDisplay').innerText=sliderToTime(v);"
-    "fetch('/setalarm?slider='+v);"
-  "}");
- 
+  // Funciones
   resp->print("function enviarColor(v){fetch('/setcolor?value='+v);}");
-  resp->print("function setSonidoManual(v){fetch('/setsonidomanual?s='+v);}");
-  resp->print("function armarAlarma(){alarmaArmada=true;alarmaRinging=false;fetch('/togglealarm?activa=1');refrescarEstadoAlarma();}");
-  resp->print("function desarmarAlarma(){alarmaArmada=false;alarmaRinging=false;fetch('/togglealarm?activa=0');refrescarEstadoAlarma();}");
-  resp->print("function apagarAlarma(){alarmaRinging=false;fetch('/stopalarm');refrescarEstadoAlarma();}");
   resp->print("function toggleProg(i,v){fetch('/settogprog?i='+i+'&a='+(v?1:0));}");
   resp->print("function setSonidoProg(i,v){fetch('/setsonidoprog?i='+i+'&s='+v);}");
  
-  resp->print("function refrescarEstadoAlarma(){"
-    "var card=document.getElementById('alarmaCard');"
-    "var badge=document.getElementById('alarmaBadge');"
-    "var timeEl=document.getElementById('alarmaTimeDisplay');"
-    "var btnAp=document.getElementById('btnApagar');"
-    "if(alarmaArmada){card.classList.add('armada');}else{card.classList.remove('armada');}"
-    "if(alarmaRinging){timeEl.classList.add('armada');}else{timeEl.classList.remove('armada');}"
-    "if(alarmaRinging){"
-      "badge.className='badge badge-ringing';badge.innerText='SONANDO';btnAp.style.display='block';"
-    "}else if(alarmaArmada){"
-      "badge.className='badge badge-set';badge.innerText='ARMADA';btnAp.style.display='none';"
-    "}else{"
-      "badge.className='badge badge-off';badge.innerText='DESARMADA';btnAp.style.display='none';"
-    "}"
+  // Timbre manual — variable de estado para no confundir con clicks en select
+  resp->print("var timbrePresionado=false;");
+  resp->print("function timbreOn(e){"
+    "if(e)e.preventDefault();"
+    "timbrePresionado=true;"
+    "document.getElementById('btnTimbre').classList.add('sonando');"
+    "document.getElementById('btnTimbre').innerText='SONANDO...';"
+    "fetch('/timbre?state=1');"
   "}");
+  resp->print("function timbreOff(){"
+    "if(!timbrePresionado)return;"
+    "timbrePresionado=false;"
+    "document.getElementById('btnTimbre').classList.remove('sonando');"
+    "document.getElementById('btnTimbre').innerText='Mantener para sonar';"
+    "fetch('/timbre?state=0');"
+  "}");
+  // Solo apaga si el timbre fue presionado — ignora mouseup de selects y otros elementos
+  resp->print("document.addEventListener('mouseup',timbreOff);");
+  resp->print("document.addEventListener('touchend',timbreOff);");
  
+  // Tabla de alarmas programadas
   resp->print("function buildProgTable(estados){"
     "var tb=document.getElementById('tbodyProg');"
     "tb.innerHTML='';"
@@ -376,7 +347,6 @@ void enviarPaginaPrincipal(AsyncWebServerRequest* request) {
       "var son=st.s||0;"
       "var ringing=st.r||false;"
       "var tr=document.createElement('tr');"
-      "if(ringing)tr.className='ringing-row';"
       "var hStr=(h.hh<10?'0'+h.hh:h.hh)+':'+(h.mm<10?'0'+h.mm:h.mm);"
       "var selOpts='';"
       "for(var k=0;k<SONIDOS.length;k++){"
@@ -395,22 +365,17 @@ void enviarPaginaPrincipal(AsyncWebServerRequest* request) {
     "}"
   "}");
  
+  // Polling cada segundo
   resp->print("setInterval(function(){"
     "fetch('/status').then(function(r){return r.json();}).then(function(data){"
       "document.getElementById('web-modo').innerText=data.modo;"
       "document.getElementById('web-valor').innerText=data.valor;"
-      "alarmaArmada=data.alarmaActiva;"
-      "alarmaRinging=data.alarmaDisparada;"
-      "refrescarEstadoAlarma();"
       "buildProgTable(data.prog);"
     "});"
   "},1000);");
  
   resp->print("buildProgTable(progEstado);");
-  resp->printf("document.getElementById('alarmaTimeDisplay').innerText=sliderToTime(%d);", alarmaSlider);
- 
   resp->print("</script></body></html>");
- 
   request->send(resp);
 }
  
@@ -419,16 +384,13 @@ void enviarPaginaPrincipal(AsyncWebServerRequest* request) {
 // =========================================================
 void enviarStatus(AsyncWebServerRequest* request) {
   AsyncResponseStream* resp = request->beginResponseStream("application/json");
-  resp->printf("{\"modo\":\"%s\",\"valor\":\"%s\",\"alarmaActiva\":%s,\"alarmaDisparada\":%s,\"prog\":[",
-    stringModoWeb, stringValorWeb,
-    alarmaActiva    ? "true" : "false",
-    alarmaDisparada ? "true" : "false");
+  resp->printf("{\"modo\":\"%s\",\"valor\":\"%s\",\"prog\":[", stringModoWeb, stringValorWeb);
   for (int i = 0; i < NUM_ALARMAS_PROG; i++) {
     resp->printf("{\"a\":%s,\"s\":%d,\"r\":%s}",
       alarmasProg[i].activa    ? "true" : "false",
       alarmasProg[i].sonido,
       alarmasProg[i].disparada ? "true" : "false");
-    if (i < NUM_ALARMAS_PROG - 1) resp->print(",");
+    if (i < NUM_ALARMAS_PROG-1) resp->print(",");
   }
   resp->print("]}");
   request->send(resp);
@@ -469,49 +431,38 @@ void setup() {
   TiraDeLeds.setBrightness(150);
  
   actualizarPaletaColores(tonoElegido);
-  calcularHoraAlarma(alarmaSlider);
   setup_wifi();
  
   server.on("/", HTTP_GET, [](AsyncWebServerRequest* r){ enviarPaginaPrincipal(r); });
   server.on("/status", HTTP_GET, [](AsyncWebServerRequest* r){ enviarStatus(r); });
  
   server.on("/setcolor", HTTP_GET, [](AsyncWebServerRequest* req){
-    if (req->hasParam("value")) { tonoElegido = req->getParam("value")->value().toInt(); actualizarPaletaColores(tonoElegido); }
-    req->send(200, "text/plain", "OK");
-  });
- 
-  server.on("/setalarm", HTTP_GET, [](AsyncWebServerRequest* req){
-    if (req->hasParam("slider")) {
-      alarmaSlider = constrain(req->getParam("slider")->value().toInt(), 0, 143);
-      calcularHoraAlarma(alarmaSlider);
-      alarmaDisparada = false; alarmaApagadaManual = false;
+    if (req->hasParam("value")) {
+      tonoElegido = req->getParam("value")->value().toInt();
+      actualizarPaletaColores(tonoElegido);
     }
     req->send(200, "text/plain", "OK");
   });
  
-  server.on("/setsonidomanual", HTTP_GET, [](AsyncWebServerRequest* req){
-    if (req->hasParam("s")) alarmaSonidoManual = constrain(req->getParam("s")->value().toInt(), 0, 37);
-    req->send(200, "text/plain", "OK");
-  });
- 
-  server.on("/togglealarm", HTTP_GET, [](AsyncWebServerRequest* req){
-    if (req->hasParam("activa")) {
-      alarmaActiva = (req->getParam("activa")->value() == "1");
-      if (!alarmaActiva) { alarmaDisparada = false; alarmaApagadaManual = false; }
+  // Timbre manual
+  server.on("/timbre", HTTP_GET, [](AsyncWebServerRequest* req){
+    if (req->hasParam("state")) {
+      timbreManual = (req->getParam("state")->value() == "1");
+      if (!timbreManual) digitalWrite(BUZZER_PIN, LOW);
+      Serial.printf("Timbre manual: %s\n", timbreManual ? "ON" : "OFF");
     }
     req->send(200, "text/plain", "OK");
   });
  
-  server.on("/stopalarm", HTTP_GET, [](AsyncWebServerRequest* req){
-    alarmaDisparada = false; alarmaApagadaManual = true; detenerBuzzer();
-    req->send(200, "text/plain", "OK");
-  });
- 
+  // Alarmas programadas
   server.on("/settogprog", HTTP_GET, [](AsyncWebServerRequest* req){
     if (req->hasParam("i") && req->hasParam("a")) {
       int idx = constrain(req->getParam("i")->value().toInt(), 0, NUM_ALARMAS_PROG-1);
       alarmasProg[idx].activa = (req->getParam("a")->value() == "1");
-      if (!alarmasProg[idx].activa) { alarmasProg[idx].disparada = false; alarmasProg[idx].apagadaManual = false; }
+      if (!alarmasProg[idx].activa) {
+        alarmasProg[idx].disparada = false;
+        alarmasProg[idx].apagadaManual = false;
+      }
     }
     req->send(200, "text/plain", "OK");
   });
@@ -527,7 +478,8 @@ void setup() {
   server.on("/stoppropalarm", HTTP_GET, [](AsyncWebServerRequest* req){
     if (req->hasParam("i")) {
       int idx = constrain(req->getParam("i")->value().toInt(), 0, NUM_ALARMAS_PROG-1);
-      alarmasProg[idx].disparada = false; alarmasProg[idx].apagadaManual = true;
+      alarmasProg[idx].disparada = false;
+      alarmasProg[idx].apagadaManual = true;
     }
     detenerBuzzer();
     req->send(200, "text/plain", "OK");
@@ -546,18 +498,6 @@ void loop() {
   if (millis() - ultSincNTP >= 1000) {
     ultSincNTP = millis();
     actualizaHora();
- 
-    // Alarma manual
-    if (alarmaActiva && !alarmaApagadaManual) {
-      if (horas == alarmaHoras && minutos == alarmaMinutos && !alarmaDisparada) {
-        alarmaDisparada = true;
-        if (buzzerAlarmIdx < 0) iniciarBuzzer(alarmaSonidoManual);
-      }
-    }
-    if (alarmaApagadaManual && !(horas == alarmaHoras && minutos == alarmaMinutos))
-      alarmaApagadaManual = false;
-    if (alarmaDisparada && !(horas == alarmaHoras && minutos == alarmaMinutos))
-      alarmaDisparada = false;
  
     // Alarmas programadas
     for (int i = 0; i < NUM_ALARMAS_PROG; i++) {
@@ -605,13 +545,13 @@ void mostrarEnDisplay() {
   uint32_t cT, cP, cG;
  
   if (segundos % 10 < 5) {
-    pg = horas;   sg = minutos;
+    pg = horas;  sg = minutos;
     cT = ColorHora; cG = ColorGuionHora;
     cP = (segundos % 2 == 0) ? ColorPuntosHora : Apagado;
     strcpy(stringModoWeb, "MOSTRANDO: HORA");
     sprintf(stringValorWeb, "%02d:%02d", horas, minutos);
   } else {
-    pg = dias;    sg = meses;
+    pg = dias;   sg = meses;
     cT = ColorFecha; cP = ColorPuntosFecha; cG = ColorGuionFecha;
     strcpy(stringModoWeb, "MOSTRANDO: FECHA");
     sprintf(stringValorWeb, "%02d-%02d", dias, meses);
