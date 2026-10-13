@@ -38,6 +38,15 @@ Adafruit_NeoPixel TiraDeLeds(TOTAL_LEDS, DATA_PIN, NEO_GRB + NEO_KHZ800);
 // =========================================================
 struct Pulso { uint16_t on; uint16_t off; };
  
+#define NUM_MELODIAS 38
+#define PAT_TIMBRE   100
+ 
+// Timbre: pitido sostenido
+const Pulso patTimbre[] = { {1500,500}, {0,0} };
+ 
+// Melodia elegida en el selector (1..NUM_MELODIAS)
+uint8_t melodiaElegida = 1;
+ 
 const Pulso sonidos[38][16] = {
   /* 0 */ {{100,100},{100,100},{100,100},{100,100},{100,100},{0,0}},
   /* 1 */ {{500,200},{500,200},{500,200},{0,0}},
@@ -79,19 +88,9 @@ const Pulso sonidos[38][16] = {
   /*37 */ {{600,300},{300,150},{150,75},{600,300},{0,0}},
 };
  
-const char* nombresSonidos[38] = {
-  "Timbre 1",  "Timbre 2",  "Timbre 3",  "Timbre 4",  "Timbre 5",
-  "Timbre 6",  "Timbre 7",  "Timbre 8",  "Timbre 9",  "Timbre 10",
-  "Timbre 11", "Timbre 12", "Timbre 13", "Timbre 14", "Timbre 15",
-  "Timbre 16", "Timbre 17", "Timbre 18", "Timbre 19", "Timbre 20",
-  "Timbre 21", "Timbre 22", "Timbre 23", "Timbre 24", "Timbre 25",
-  "Timbre 26", "Timbre 27", "Timbre 28", "Timbre 29", "Timbre 30",
-  "Timbre 31", "Timbre 32", "Timbre 33", "Timbre 34", "Timbre 35",
-  "Timbre 36", "Timbre 37", "Timbre 38"
-};
- 
 // =========================================================
 // ALARMAS PROGRAMADAS
+// sonido: 0 = Timbre, 1 = Melodia (la del selector global)
 // =========================================================
 #define NUM_ALARMAS_PROG 14
  
@@ -122,22 +121,27 @@ uint8_t       buzzerPulsoIdx = 0;
 bool          buzzerFase     = false;
 unsigned long buzzerProxMs   = 0;
 uint8_t       buzzerReps     = 0;
+uint8_t       buzzerRepsMax  = 3;
+bool          buzzerPreview  = false;   // true = suena solo como aviso de cambio de melodia
 #define       BUZZER_REPS    3
  
 // Timbre manual: suena mientras sea true (tiene prioridad)
 bool timbreManual = false;
  
-void iniciarBuzzer(uint8_t idx) {
+void iniciarBuzzer(uint8_t idx, uint8_t reps = BUZZER_REPS, bool preview = false) {
   buzzerAlarmIdx = idx;
   buzzerPulsoIdx = 0;
   buzzerFase     = false;
   buzzerReps     = 0;
+  buzzerRepsMax  = reps;
+  buzzerPreview  = preview;
   buzzerProxMs   = millis();
   digitalWrite(BUZZER_PIN, HIGH);
 }
  
 void detenerBuzzer() {
   buzzerAlarmIdx = -1;
+  buzzerPreview  = false;
   digitalWrite(BUZZER_PIN, LOW);
 }
  
@@ -149,10 +153,10 @@ void tickBuzzer() {
   }
   if (buzzerAlarmIdx < 0) return;
   if (millis() < buzzerProxMs) return;
-  const Pulso* pat = sonidos[buzzerAlarmIdx];
+  const Pulso* pat = (buzzerAlarmIdx == PAT_TIMBRE) ? patTimbre : sonidos[buzzerAlarmIdx];
   if (pat[buzzerPulsoIdx].on == 0) {
     buzzerReps++;
-    if (buzzerReps >= BUZZER_REPS) { detenerBuzzer(); return; }
+    if (buzzerReps >= buzzerRepsMax) { detenerBuzzer(); return; }
     buzzerPulsoIdx = 0;
     buzzerFase     = false;
   }
@@ -232,8 +236,6 @@ void enviarPaginaPrincipal(AsyncWebServerRequest* request) {
     "animation:pulso .5s infinite alternate;"
   "}");
   // Tabla alarmas programadas
-  resp->print("select{background:#1a1a1a;color:#ddd;border:1px solid #444;border-radius:6px;padding:5px 8px;font-size:12px;width:100%;margin-top:6px;cursor:pointer}");
-  resp->print("select:focus{outline:none;border-color:#888}");
   resp->print(".prog-table{width:100%;border-collapse:collapse;font-size:13px;margin-top:4px}");
   resp->print(".prog-table th{color:#888;font-size:11px;text-transform:uppercase;padding:4px 6px;border-bottom:1px solid #333;text-align:left;font-weight:normal;letter-spacing:1px}");
   resp->print(".prog-table td{padding:6px 6px;border-bottom:1px solid #222;vertical-align:middle;text-align:left}");
@@ -244,7 +246,14 @@ void enviarPaginaPrincipal(AsyncWebServerRequest* request) {
   resp->print(".badge-off{background:#2a2a2a;color:#555;border:1px solid #333}");
   resp->print(".badge-set{background:#0d2200;color:#00ff66;border:1px solid #00ff66}");
   resp->print(".badge-ringing{background:#3d0000;color:#ff4444;border:1px solid #f44;animation:pulso .6s infinite alternate}");
-  resp->print(".sound-sel{background:#1a1a1a;color:#ddd;border:1px solid #333;border-radius:5px;padding:3px 5px;font-size:11px;width:100%;cursor:pointer}");
+  // Selector Timbre / Melodia (2 botones)
+  resp->print(".seg{display:flex;gap:4px}");
+  resp->print(".seg-b{flex:1;padding:5px 8px;border:1px solid #333;border-radius:5px;background:#1a1a1a;color:#777;font-size:11px;cursor:pointer}");
+  resp->print(".seg-b.on{background:#4488ff;color:#fff;border-color:#4488ff}");
+  // Selector de melodia
+  resp->print(".stepper{display:flex;align-items:center;justify-content:center;gap:24px}");
+  resp->print(".step-btn{width:50px;height:50px;border:none;border-radius:50%;background:#4488ff;color:#fff;font-size:26px;font-weight:bold;cursor:pointer}");
+  resp->print(".step-btn:active{transform:scale(.92)}");
   resp->print("@keyframes pulso{from{opacity:1}to{opacity:.4}}");
   resp->print("</style></head><body><div class='container'>");
  
@@ -271,6 +280,15 @@ void enviarPaginaPrincipal(AsyncWebServerRequest* request) {
               "</button>");
   resp->print("</div>");
  
+  // Tarjeta: selector de melodia
+  resp->print("<div class='card prog-card'>");
+  resp->print("<h2>&#127925; Melod&iacute;a</h2>");
+  resp->printf("<div class='stepper'>"
+    "<button class='step-btn' onclick='stepMelodia(-1)'>&minus;</button>"
+    "<span id='melNum' class='value'>%d</span>"
+    "<button class='step-btn' onclick='stepMelodia(1)'>+</button>"
+    "</div></div>", melodiaElegida);
+ 
   // Tarjeta: alarmas programadas
   resp->print("<div class='card prog-card'>");
   resp->print("<h2>&#128197; Alarmas Programadas</h2>");
@@ -292,14 +310,6 @@ void enviarPaginaPrincipal(AsyncWebServerRequest* request) {
   }
   resp->print("];");
  
-  // Nombres de sonidos
-  resp->print("var SONIDOS=[");
-  for (int i = 0; i < 38; i++) {
-    resp->printf("'%s'", nombresSonidos[i]);
-    if (i < 37) resp->print(",");
-  }
-  resp->print("];");
- 
   // Estado inicial de alarmas programadas
   resp->print("var progEstado=[");
   for (int i = 0; i < NUM_ALARMAS_PROG; i++) {
@@ -315,6 +325,7 @@ void enviarPaginaPrincipal(AsyncWebServerRequest* request) {
   resp->print("function enviarColor(v){fetch('/setcolor?value='+v);}");
   resp->print("function toggleProg(i,v){fetch('/settogprog?i='+i+'&a='+(v?1:0));}");
   resp->print("function setSonidoProg(i,v){fetch('/setsonidoprog?i='+i+'&s='+v);}");
+  resp->print("function stepMelodia(d){fetch('/stepmelodia?d='+d).then(function(r){return r.text();}).then(function(t){document.getElementById('melNum').innerText=t;});}");
  
   // Timbre manual — variable de estado para no confundir con clicks en select
   resp->print("var timbrePresionado=false;");
@@ -332,7 +343,7 @@ void enviarPaginaPrincipal(AsyncWebServerRequest* request) {
     "document.getElementById('btnTimbre').innerText='Mantener para sonar';"
     "fetch('/timbre?state=0');"
   "}");
-  // Solo apaga si el timbre fue presionado — ignora mouseup de selects y otros elementos
+  // Solo apaga si el timbre fue presionado — ignora mouseup de otros elementos
   resp->print("document.addEventListener('mouseup',timbreOff);");
   resp->print("document.addEventListener('touchend',timbreOff);");
  
@@ -348,10 +359,6 @@ void enviarPaginaPrincipal(AsyncWebServerRequest* request) {
       "var ringing=st.r||false;"
       "var tr=document.createElement('tr');"
       "var hStr=(h.hh<10?'0'+h.hh:h.hh)+':'+(h.mm<10?'0'+h.mm:h.mm);"
-      "var selOpts='';"
-      "for(var k=0;k<SONIDOS.length;k++){"
-        "selOpts+='<option value='+k+(k==son?' selected':'')+'>'+SONIDOS[k]+'</option>';"
-      "}"
       "var badge=ringing"
         "?'<span class=\\'badge badge-ringing\\'>SONANDO</span>'"
         ":activa?'<span class=\\'badge badge-set\\'>ARMADA</span>'"
@@ -359,7 +366,10 @@ void enviarPaginaPrincipal(AsyncWebServerRequest* request) {
       "tr.innerHTML="
         "'<td><input class=\\'chk\\' type=\\'checkbox\\' '+(activa?'checked':'')+' onchange=\\'toggleProg('+i+',this.checked)\\'></td>'"
         "+'<td><span class=\\'hora-badge\\'>'+hStr+'</span></td>'"
-        "+'<td><select class=\\'sound-sel\\' onchange=\\'setSonidoProg('+i+',this.value)\\'>'+selOpts+'</select></td>'"
+        "+'<td><div class=\\'seg\\'>'"
+          "+'<button class=\\'seg-b'+(son==0?' on':'')+'\\' onclick=\\'setSonidoProg('+i+',0)\\'>Timbre</button>'"
+          "+'<button class=\\'seg-b'+(son==1?' on':'')+'\\' onclick=\\'setSonidoProg('+i+',1)\\'>Melod&iacute;a</button>'"
+        "+'</div></td>'"
         "+'<td>'+badge+'</td>';"
       "tb.appendChild(tr);"
     "}"
@@ -370,6 +380,7 @@ void enviarPaginaPrincipal(AsyncWebServerRequest* request) {
     "fetch('/status').then(function(r){return r.json();}).then(function(data){"
       "document.getElementById('web-modo').innerText=data.modo;"
       "document.getElementById('web-valor').innerText=data.valor;"
+      "document.getElementById('melNum').innerText=data.mel;"
       "buildProgTable(data.prog);"
     "});"
   "},1000);");
@@ -384,7 +395,7 @@ void enviarPaginaPrincipal(AsyncWebServerRequest* request) {
 // =========================================================
 void enviarStatus(AsyncWebServerRequest* request) {
   AsyncResponseStream* resp = request->beginResponseStream("application/json");
-  resp->printf("{\"modo\":\"%s\",\"valor\":\"%s\",\"prog\":[", stringModoWeb, stringValorWeb);
+  resp->printf("{\"modo\":\"%s\",\"valor\":\"%s\",\"mel\":%d,\"prog\":[", stringModoWeb, stringValorWeb, melodiaElegida);
   for (int i = 0; i < NUM_ALARMAS_PROG; i++) {
     resp->printf("{\"a\":%s,\"s\":%d,\"r\":%s}",
       alarmasProg[i].activa    ? "true" : "false",
@@ -454,6 +465,19 @@ void setup() {
     req->send(200, "text/plain", "OK");
   });
  
+  // Selector de melodia (paso de a 1, con vuelta). Al cambiar suena una vez como aviso.
+  server.on("/stepmelodia", HTTP_GET, [](AsyncWebServerRequest* req){
+    int d = req->hasParam("d") ? req->getParam("d")->value().toInt() : 1;
+    int m = (melodiaElegida - 1 + d) % NUM_MELODIAS;
+    if (m < 0) m += NUM_MELODIAS;
+    melodiaElegida = m + 1;
+    Serial.printf("Melodia elegida: %d\n", melodiaElegida);
+    // No pisa una alarma real que este sonando ni el timbre manual
+    if (!timbreManual && (buzzerAlarmIdx < 0 || buzzerPreview))
+      iniciarBuzzer(melodiaElegida - 1, 1, true);
+    req->send(200, "text/plain", String(melodiaElegida));
+  });
+ 
   // Alarmas programadas
   server.on("/settogprog", HTTP_GET, [](AsyncWebServerRequest* req){
     if (req->hasParam("i") && req->hasParam("a")) {
@@ -467,10 +491,11 @@ void setup() {
     req->send(200, "text/plain", "OK");
   });
  
+  // Tipo de sonido de la alarma: 0 = Timbre, 1 = Melodia
   server.on("/setsonidoprog", HTTP_GET, [](AsyncWebServerRequest* req){
     if (req->hasParam("i") && req->hasParam("s")) {
       int idx = constrain(req->getParam("i")->value().toInt(), 0, NUM_ALARMAS_PROG-1);
-      alarmasProg[idx].sonido = constrain(req->getParam("s")->value().toInt(), 0, 37);
+      alarmasProg[idx].sonido = (req->getParam("s")->value() == "1") ? 1 : 0;
     }
     req->send(200, "text/plain", "OK");
   });
@@ -504,7 +529,11 @@ void loop() {
       if (alarmasProg[i].activa && !alarmasProg[i].apagadaManual) {
         if (horas == alarmasProg[i].hh && minutos == alarmasProg[i].mm && !alarmasProg[i].disparada) {
           alarmasProg[i].disparada = true;
-          if (buzzerAlarmIdx < 0) iniciarBuzzer(alarmasProg[i].sonido);
+          // Una alarma real pisa el aviso de cambio de melodia
+          if (buzzerAlarmIdx < 0 || buzzerPreview) {
+            uint8_t pat = (alarmasProg[i].sonido == 0) ? PAT_TIMBRE : (melodiaElegida - 1);
+            iniciarBuzzer(pat);
+          }
         }
       }
       if (alarmasProg[i].apagadaManual && !(horas == alarmasProg[i].hh && minutos == alarmasProg[i].mm))
@@ -571,3 +600,4 @@ void mostrarEnDisplay() {
  
   TiraDeLeds.show();
 }
+ 
