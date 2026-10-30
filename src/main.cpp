@@ -128,6 +128,37 @@ bool          buzzerPreview  = false;   // true = suena solo como aviso de cambi
 // Timbre manual: suena mientras sea true (tiene prioridad)
 bool timbreManual = false;
  
+// =========================================================
+// PULSOS DE SALIDA (non-blocking)
+// Pin 21: pulso al apretar "+" del selector de melodia
+// Pin 0 : pulso por cada alarma que se dispara
+// =========================================================
+#define PIN_PULSO_MEL     21
+#define PIN_PULSO_ALARMA  0
+#define PULSO_MS          300
+ 
+struct PulsoPin {
+  uint8_t       pin;
+  bool          activo;
+  unsigned long fin;
+};
+ 
+PulsoPin pulsoMel    = { PIN_PULSO_MEL,    false, 0 };
+PulsoPin pulsoAlarma = { PIN_PULSO_ALARMA, false, 0 };
+ 
+void iniciarPulso(PulsoPin &p) {
+  p.activo = true;
+  p.fin    = millis() + PULSO_MS;
+  digitalWrite(p.pin, HIGH);
+}
+ 
+void tickPulso(PulsoPin &p) {
+  if (p.activo && (long)(millis() - p.fin) >= 0) {
+    digitalWrite(p.pin, LOW);
+    p.activo = false;
+  }
+}
+ 
 void iniciarBuzzer(uint8_t idx, uint8_t reps = BUZZER_REPS, bool preview = false) {
   buzzerAlarmIdx = idx;
   buzzerPulsoIdx = 0;
@@ -437,6 +468,11 @@ void setup() {
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
  
+  pinMode(PIN_PULSO_MEL, OUTPUT);
+  digitalWrite(PIN_PULSO_MEL, LOW);
+  pinMode(PIN_PULSO_ALARMA, OUTPUT);
+  digitalWrite(PIN_PULSO_ALARMA, LOW);
+ 
   TiraDeLeds.begin();
   TiraDeLeds.show();
   TiraDeLeds.setBrightness(150);
@@ -468,6 +504,7 @@ void setup() {
   // Selector de melodia (paso de a 1, con vuelta). Al cambiar suena una vez como aviso.
   server.on("/stepmelodia", HTTP_GET, [](AsyncWebServerRequest* req){
     int d = req->hasParam("d") ? req->getParam("d")->value().toInt() : 1;
+    if (d > 0) iniciarPulso(pulsoMel);   // solo con el boton "+"
     int m = (melodiaElegida - 1 + d) % NUM_MELODIAS;
     if (m < 0) m += NUM_MELODIAS;
     melodiaElegida = m + 1;
@@ -519,6 +556,8 @@ void setup() {
 // =========================================================
 void loop() {
   tickBuzzer();
+  tickPulso(pulsoMel);
+  tickPulso(pulsoAlarma);
  
   if (millis() - ultSincNTP >= 1000) {
     ultSincNTP = millis();
@@ -529,6 +568,7 @@ void loop() {
       if (alarmasProg[i].activa && !alarmasProg[i].apagadaManual) {
         if (horas == alarmasProg[i].hh && minutos == alarmasProg[i].mm && !alarmasProg[i].disparada) {
           alarmasProg[i].disparada = true;
+          iniciarPulso(pulsoAlarma);   // pulso en pin 0, suene o no el buzzer
           // Una alarma real pisa el aviso de cambio de melodia
           if (buzzerAlarmIdx < 0 || buzzerPreview) {
             uint8_t pat = (alarmasProg[i].sonido == 0) ? PAT_TIMBRE : (melodiaElegida - 1);
@@ -600,4 +640,3 @@ void mostrarEnDisplay() {
  
   TiraDeLeds.show();
 }
- 
