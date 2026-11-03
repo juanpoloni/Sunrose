@@ -10,6 +10,10 @@ void mostrarEnDisplay();
 void actualizaHora();
 void tickBuzzer();
  
+// --- Version de firmware ---
+#define FW_MAJOR 1
+#define FW_MINOR 0
+ 
 // --- Configuracion Wi-Fi ---
 const char* ssid     = "Wokwi-GUEST";
 const char* password = "";
@@ -128,37 +132,6 @@ bool          buzzerPreview  = false;   // true = suena solo como aviso de cambi
 // Timbre manual: suena mientras sea true (tiene prioridad)
 bool timbreManual = false;
  
-// =========================================================
-// PULSOS DE SALIDA (non-blocking)
-// Pin 21: pulso al apretar "+" del selector de melodia
-// Pin 0 : pulso por cada alarma que se dispara
-// =========================================================
-#define PIN_PULSO_MEL     21
-#define PIN_PULSO_ALARMA  0
-#define PULSO_MS          300
- 
-struct PulsoPin {
-  uint8_t       pin;
-  bool          activo;
-  unsigned long fin;
-};
- 
-PulsoPin pulsoMel    = { PIN_PULSO_MEL,    false, 0 };
-PulsoPin pulsoAlarma = { PIN_PULSO_ALARMA, false, 0 };
- 
-void iniciarPulso(PulsoPin &p) {
-  p.activo = true;
-  p.fin    = millis() + PULSO_MS;
-  digitalWrite(p.pin, HIGH);
-}
- 
-void tickPulso(PulsoPin &p) {
-  if (p.activo && (long)(millis() - p.fin) >= 0) {
-    digitalWrite(p.pin, LOW);
-    p.activo = false;
-  }
-}
- 
 void iniciarBuzzer(uint8_t idx, uint8_t reps = BUZZER_REPS, bool preview = false) {
   buzzerAlarmIdx = idx;
   buzzerPulsoIdx = 0;
@@ -224,6 +197,13 @@ const byte Digitos[] = {
 int horas=0,minutos=0,segundos=0,dias=1,meses=1;
 unsigned long ultSincNTP = 0;
  
+// --- Modo configuracion en el display ---
+// Pantallas (CFG_PANT_MS cada una): IP octeto 1..4, firmware, melodia
+#define CFG_PANTALLAS 6
+#define CFG_PANT_MS   2000
+bool          cfgActivo    = false;
+unsigned long cfgInicioMs  = 0;
+ 
 // =========================================================
 // PAGINA WEB
 // =========================================================
@@ -266,6 +246,9 @@ void enviarPaginaPrincipal(AsyncWebServerRequest* request) {
     "transform:scale(.97);"
     "animation:pulso .5s infinite alternate;"
   "}");
+  // Boton generico (melodia / configuracion)
+  resp->print(".btn-main{display:block;width:100%;padding:16px;border:none;border-radius:12px;font-size:17px;font-weight:bold;background:#4488ff;color:#fff;cursor:pointer;transition:transform .1s}");
+  resp->print(".btn-main:active{transform:scale(.97)}");
   // Tabla alarmas programadas
   resp->print(".prog-table{width:100%;border-collapse:collapse;font-size:13px;margin-top:4px}");
   resp->print(".prog-table th{color:#888;font-size:11px;text-transform:uppercase;padding:4px 6px;border-bottom:1px solid #333;text-align:left;font-weight:normal;letter-spacing:1px}");
@@ -281,10 +264,6 @@ void enviarPaginaPrincipal(AsyncWebServerRequest* request) {
   resp->print(".seg{display:flex;gap:4px}");
   resp->print(".seg-b{flex:1;padding:5px 8px;border:1px solid #333;border-radius:5px;background:#1a1a1a;color:#777;font-size:11px;cursor:pointer}");
   resp->print(".seg-b.on{background:#4488ff;color:#fff;border-color:#4488ff}");
-  // Selector de melodia
-  resp->print(".stepper{display:flex;align-items:center;justify-content:center;gap:24px}");
-  resp->print(".step-btn{width:50px;height:50px;border:none;border-radius:50%;background:#4488ff;color:#fff;font-size:26px;font-weight:bold;cursor:pointer}");
-  resp->print(".step-btn:active{transform:scale(.92)}");
   resp->print("@keyframes pulso{from{opacity:1}to{opacity:.4}}");
   resp->print("</style></head><body><div class='container'>");
  
@@ -311,14 +290,18 @@ void enviarPaginaPrincipal(AsyncWebServerRequest* request) {
               "</button>");
   resp->print("</div>");
  
-  // Tarjeta: selector de melodia
+  // Tarjeta: selector de melodia (un solo boton, avanza de a 1 y vuelve a la primera)
   resp->print("<div class='card prog-card'>");
   resp->print("<h2>&#127925; Melod&iacute;a</h2>");
-  resp->printf("<div class='stepper'>"
-    "<button class='step-btn' onclick='stepMelodia(-1)'>&minus;</button>"
-    "<span id='melNum' class='value'>%d</span>"
-    "<button class='step-btn' onclick='stepMelodia(1)'>+</button>"
-    "</div></div>", melodiaElegida);
+  resp->printf("<button class='btn-main' onclick='stepMelodia()'>"
+    "Melod&iacute;a <span id='melNum'>%d</span> &#9654;"
+    "</button></div>", melodiaElegida);
+ 
+  // Tarjeta: configuracion en el display
+  resp->print("<div class='card prog-card'>");
+  resp->print("<h2>&#9881; Configuraci&oacute;n</h2>");
+  resp->print("<button class='btn-main' onclick='mostrarConfig()'>Mostrar en display</button>");
+  resp->print("</div>");
  
   // Tarjeta: alarmas programadas
   resp->print("<div class='card prog-card'>");
@@ -356,9 +339,10 @@ void enviarPaginaPrincipal(AsyncWebServerRequest* request) {
   resp->print("function enviarColor(v){fetch('/setcolor?value='+v);}");
   resp->print("function toggleProg(i,v){fetch('/settogprog?i='+i+'&a='+(v?1:0));}");
   resp->print("function setSonidoProg(i,v){fetch('/setsonidoprog?i='+i+'&s='+v);}");
-  resp->print("function stepMelodia(d){fetch('/stepmelodia?d='+d).then(function(r){return r.text();}).then(function(t){document.getElementById('melNum').innerText=t;});}");
+  resp->print("function stepMelodia(){fetch('/stepmelodia').then(function(r){return r.text();}).then(function(t){document.getElementById('melNum').innerText=t;});}");
+  resp->print("function mostrarConfig(){fetch('/showconfig');}");
  
-  // Timbre manual — variable de estado para no confundir con clicks en select
+  // Timbre manual — variable de estado para no confundir con clicks en otros elementos
   resp->print("var timbrePresionado=false;");
   resp->print("function timbreOn(e){"
     "if(e)e.preventDefault();"
@@ -468,11 +452,6 @@ void setup() {
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
  
-  pinMode(PIN_PULSO_MEL, OUTPUT);
-  digitalWrite(PIN_PULSO_MEL, LOW);
-  pinMode(PIN_PULSO_ALARMA, OUTPUT);
-  digitalWrite(PIN_PULSO_ALARMA, LOW);
- 
   TiraDeLeds.begin();
   TiraDeLeds.show();
   TiraDeLeds.setBrightness(150);
@@ -501,18 +480,24 @@ void setup() {
     req->send(200, "text/plain", "OK");
   });
  
-  // Selector de melodia (paso de a 1, con vuelta). Al cambiar suena una vez como aviso.
+  // Selector de melodia: avanza de a 1 y al llegar a la ultima vuelve a la primera.
+  // Al cambiar suena una vez como aviso.
   server.on("/stepmelodia", HTTP_GET, [](AsyncWebServerRequest* req){
-    int d = req->hasParam("d") ? req->getParam("d")->value().toInt() : 1;
-    if (d > 0) iniciarPulso(pulsoMel);   // solo con el boton "+"
-    int m = (melodiaElegida - 1 + d) % NUM_MELODIAS;
-    if (m < 0) m += NUM_MELODIAS;
-    melodiaElegida = m + 1;
+    melodiaElegida = (melodiaElegida % NUM_MELODIAS) + 1;
     Serial.printf("Melodia elegida: %d\n", melodiaElegida);
     // No pisa una alarma real que este sonando ni el timbre manual
     if (!timbreManual && (buzzerAlarmIdx < 0 || buzzerPreview))
       iniciarBuzzer(melodiaElegida - 1, 1, true);
     req->send(200, "text/plain", String(melodiaElegida));
+  });
+ 
+  // Muestra IP, firmware y melodia en el display
+  server.on("/showconfig", HTTP_GET, [](AsyncWebServerRequest* req){
+    cfgActivo   = true;
+    cfgInicioMs = millis();
+    Serial.printf("Config -> IP: %s | FW: %d.%d | Melodia: %d\n",
+      WiFi.localIP().toString().c_str(), FW_MAJOR, FW_MINOR, melodiaElegida);
+    req->send(200, "text/plain", "OK");
   });
  
   // Alarmas programadas
@@ -556,8 +541,6 @@ void setup() {
 // =========================================================
 void loop() {
   tickBuzzer();
-  tickPulso(pulsoMel);
-  tickPulso(pulsoAlarma);
  
   if (millis() - ultSincNTP >= 1000) {
     ultSincNTP = millis();
@@ -568,7 +551,6 @@ void loop() {
       if (alarmasProg[i].activa && !alarmasProg[i].apagadaManual) {
         if (horas == alarmasProg[i].hh && minutos == alarmasProg[i].mm && !alarmasProg[i].disparada) {
           alarmasProg[i].disparada = true;
-          iniciarPulso(pulsoAlarma);   // pulso en pin 0, suene o no el buzzer
           // Una alarma real pisa el aviso de cambio de melodia
           if (buzzerAlarmIdx < 0 || buzzerPreview) {
             uint8_t pat = (alarmasProg[i].sonido == 0) ? PAT_TIMBRE : (melodiaElegida - 1);
@@ -599,8 +581,9 @@ void actualizaHora() {
   meses    = timeinfo.tm_mon + 1;
 }
  
+// valor fuera de 0..9 (por ejemplo -1) deja el digito apagado
 void muestraDigito(int valor, int ledInicial, uint32_t colorTexto) {
-  byte segmentos = Digitos[valor];
+  byte segmentos = (valor >= 0 && valor <= 9) ? Digitos[valor] : 0;
   for (int s = 0; s < SEG_POR_DIG; s++) {
     bool enc = (segmentos >> (6-s)) & 0x01;
     int  lA  = ledInicial + (s * LEDS_POR_SEG);
@@ -609,7 +592,66 @@ void muestraDigito(int valor, int ledInicial, uint32_t colorTexto) {
   }
 }
  
+// Dibuja los 4 digitos, los dos puntos y el guion
+void dibujarDisplay(int d1, int d2, int d3, int d4, uint32_t cT, uint32_t cP, uint32_t cG) {
+  muestraDigito(d1, 0, cT);
+  muestraDigito(d2, LEDS_POR_DIG, cT);
+ 
+  int iP = LEDS_POR_DIG * 2;
+  int iG = iP + DOS_PUNTOS;
+  for (int i=0;i<DOS_PUNTOS;i++) TiraDeLeds.setPixelColor(iP+i, cP);
+  for (int i=0;i<GUION;i++)      TiraDeLeds.setPixelColor(iG+i, cG);
+ 
+  int d3ini = iG + GUION;
+  muestraDigito(d3, d3ini, cT);
+  muestraDigito(d4, d3ini+LEDS_POR_DIG, cT);
+ 
+  TiraDeLeds.show();
+}
+ 
+// Secuencia de configuracion:
+//  pantallas 0..3 -> IP: primer digito = nro de octeto (1..4), resto = valor del octeto
+//  pantalla 4     -> firmware: MM:mm (dos puntos encendidos)
+//  pantalla 5     -> melodia: nro en los dos ultimos digitos (guion encendido)
+void mostrarConfigEnDisplay() {
+  unsigned long pant = (millis() - cfgInicioMs) / CFG_PANT_MS;
+  if (pant >= CFG_PANTALLAS) { cfgActivo = false; return; }
+ 
+  int d1 = -1, d2 = -1, d3 = -1, d4 = -1;
+  uint32_t cP = Apagado, cG = Apagado;
+ 
+  if (pant < 4) {
+    IPAddress ip = WiFi.localIP();
+    int o = ip[pant];
+    d1 = pant + 1;
+    d2 = (o >= 100) ? o / 100 : -1;
+    d3 = (o >= 10)  ? (o / 10) % 10 : -1;
+    d4 = o % 10;
+    strcpy(stringModoWeb, "CONFIG: IP");
+    sprintf(stringValorWeb, "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
+  } else if (pant == 4) {
+    d1 = FW_MAJOR / 10; d2 = FW_MAJOR % 10;
+    d3 = FW_MINOR / 10; d4 = FW_MINOR % 10;
+    cP = ColorPuntosHora;
+    strcpy(stringModoWeb, "CONFIG: FIRMWARE");
+    sprintf(stringValorWeb, "v%d.%d", FW_MAJOR, FW_MINOR);
+  } else {
+    d3 = (melodiaElegida >= 10) ? melodiaElegida / 10 : -1;
+    d4 = melodiaElegida % 10;
+    cG = ColorGuionFecha;
+    strcpy(stringModoWeb, "CONFIG: MELODIA");
+    sprintf(stringValorWeb, "%d", melodiaElegida);
+  }
+ 
+  dibujarDisplay(d1, d2, d3, d4, ColorHora, cP, cG);
+}
+ 
 void mostrarEnDisplay() {
+  if (cfgActivo) {
+    mostrarConfigEnDisplay();
+    if (cfgActivo) return;   // si termino la secuencia, sigue con la hora normal
+  }
+ 
   int pg, sg;
   uint32_t cT, cP, cG;
  
@@ -626,17 +668,6 @@ void mostrarEnDisplay() {
     sprintf(stringValorWeb, "%02d-%02d", dias, meses);
   }
  
-  muestraDigito(pg/10, 0, cT);
-  muestraDigito(pg%10, LEDS_POR_DIG, cT);
- 
-  int iP = LEDS_POR_DIG * 2;
-  int iG = iP + DOS_PUNTOS;
-  for (int i=0;i<DOS_PUNTOS;i++) TiraDeLeds.setPixelColor(iP+i, cP);
-  for (int i=0;i<GUION;i++)      TiraDeLeds.setPixelColor(iG+i, cG);
- 
-  int d2 = iG + GUION;
-  muestraDigito(sg/10, d2, cT);
-  muestraDigito(sg%10, d2+LEDS_POR_DIG, cT);
- 
-  TiraDeLeds.show();
+  dibujarDisplay(pg/10, pg%10, sg/10, sg%10, cT, cP, cG);
 }
+ 
